@@ -1,0 +1,80 @@
+name: Docker Build and Test (Simplified)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  IMAGE_NAME: python-calculator
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Run unit tests
+      run: |
+        echo "🧪 Spouštění unit testů..."
+        python -m unittest test_multiply.py -v
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      run: |
+        echo "🐳 Buildování Docker image..."
+        docker build -t ${{ env.IMAGE_NAME }}:latest .
+        docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+    - name: Test Docker container
+      run: |
+        echo "🚀 Testování Docker kontejneru..."
+        docker run --rm ${{ env.IMAGE_NAME }}:latest
+
+    - name: List Docker images
+      run: |
+        echo "📋 Seznam vytvořených images:"
+        docker images | grep ${{ env.IMAGE_NAME }}
+
+    - name: Save Docker image
+      run: |
+        echo "💾 Ukládání Docker image..."
+        docker save ${{ env.IMAGE_NAME }}:latest -o python-calculator-latest.tar
+        docker save ${{ env.IMAGE_NAME }}:${{ github.sha }} -o python-calculator-${{ github.sha }}.tar
+
+    - name: Create artifacts directory
+      run: |
+        mkdir -p artifacts
+        cp python-calculator-*.tar artifacts/
+        cp Dockerfile artifacts/
+        cp multiply.py artifacts/
+        cp test_multiply.py artifacts/
+        echo "Build completed at $(date)" > artifacts/build-info.txt
+        echo "Commit SHA: ${{ github.sha }}" >> artifacts/build-info.txt
+        echo "Image tags: latest, ${{ github.sha }}" >> artifacts/build-info.txt
+
+    - name: Create ZIP archive
+      run: |
+        cd artifacts
+        zip -r ../python-calculator-artifacts-${{ github.sha }}.zip .
+        cd ..
+        ls -la python-calculator-artifacts-*.zip
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-calculator-artifacts-${{ github.sha }}
+        path: |
+          python-calculator-artifacts-${{ github.sha }}.zip
+          artifacts/
+        retention-days: 30
