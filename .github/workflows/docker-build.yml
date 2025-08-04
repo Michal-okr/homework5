@@ -1,0 +1,156 @@
+name: Docker Build and Test
+
+on:
+push:
+branches: [ main, master ]
+pull_request:
+branches: [ main, master ]
+
+env:
+IMAGE_NAME: python-calculator
+
+jobs:
+build-and-test:
+runs-on: ubuntu-latest
+
+steps:
+- name: Checkout repository
+
+uses: actions/checkout@v4
+
+- name: Set up Python
+uses: actions/setup-python@v4
+with:
+python-version: &#39;3.9&#39;
+
+- name: Run unit tests
+run: |
+echo "🧪 Spouštění unit testů..."
+python -m unittest test_multiply.py -v
+
+- name: Set up Docker Buildx
+uses: docker/setup-buildx-action@v3
+
+- name: Build Docker image
+run: |
+echo &quot;�� Buildování Docker image...&quot;
+docker build -t \${{ env.IMAGE_NAME }}:latest .
+docker build -t \${{ env.IMAGE_NAME }}:\${{ github.sha }} .
+
+- name: Test Docker container
+run: |
+echo &quot;�� Testování Docker kontejneru...&quot;
+docker run --rm \${{ env.IMAGE_NAME }}:latest
+
+- name: List Docker images
+run: |
+echo "📋 Seznam vytvořených images:"
+docker images | grep ${{ env.IMAGE_NAME }}
+
+- name: Save Docker image
+run: |
+echo "💾 Ukládání Docker image..."
+docker save ${{ env.IMAGE_NAME }}:latest -o python-calculator-latest.tar
+docker save ${{ env.IMAGE_NAME }}:${{ github.sha }} -o python-calculator-${{ github.sha }}.tar
+
+- name: Create artifacts directory
+run: |
+mkdir -p artifacts
+cp python-calculator-*.tar artifacts/
+cp Dockerfile artifacts/
+cp multiply.py artifacts/
+cp test_multiply.py artifacts/
+echo "Build completed at $(date)" > artifacts/build-info.txt
+echo "Commit SHA: ${{ github.sha }}" >> artifacts/build-info.txt
+echo "Image tags: latest, ${{ github.sha }}" >> artifacts/build-info.txt
+
+- name: Create ZIP archive
+run: |
+cd artifacts
+zip -r ../python-calculator-artifacts-${{ github.sha }}.zip .
+cd ..
+ls -la python-calculator-artifacts-*.zip
+
+- name: Upload artifacts
+uses: actions/upload-artifact@v4
+with:
+name: python-calculator-artifacts-${{ github.sha }}
+path: |
+python-calculator-artifacts-${{ github.sha }}.zip
+artifacts/
+retention-days: 30
+
+deploy-to-ecr:
+needs: build-and-test
+runs-on: ubuntu-latest
+if: github.ref == &#39;refs/heads/main&#39;
+
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+
+- name: Configure AWS credentials
+uses: aws-actions/configure-aws-credentials@v4
+with:
+aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
+aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
+aws-region: eu-central-1
+
+- name: Setup Terraform
+uses: hashicorp/setup-terraform@v3
+with:
+terraform_version: 1.5.0
+
+- name: Terraform Init
+working-directory: ./terraform
+run: terraform init
+
+- name: Terraform Plan
+working-directory: ./terraform
+run: terraform plan
+
+- name: Terraform Apply
+working-directory: ./terraform
+run: terraform apply -auto-approve
+
+- name: Get ECR repository URL
+id: ecr-url
+working-directory: ./terraform
+run: |
+ECR_URL=\$(terraform output -raw ecr_repository_url)
+echo &quot;ecr_url=\$ECR_URL&quot; &gt;&gt; \$GITHUB_OUTPUT
+
+- name: Login to Amazon ECR
+id: login-ecr
+uses: aws-actions/amazon-ecr-login@v2
+
+- name: Build and push Docker image to ECR
+run: |
+ECR_URL=${{ steps.ecr-url.outputs.ecr_url }}
+docker build -t $ECR_URL:latest .
+docker build -t $ECR_URL:${{ github.sha }} .
+
+echo "🚀 Pushing images to ECR..."
+
+docker push $ECR_URL:latest
+docker push $ECR_URL:${{ github.sha }}
+
+echo "✅ Images pushed successfully!"
+echo "Repository URL: $ECR_URL"
+
+- name: Create deployment artifacts
+run: |
+mkdir -p deployment-artifacts
+echo "ECR Repository URL: ${{ steps.ecr-url.outputs.ecr_url }}" > deployment-artifacts/deployment-info.txt
+echo "Image Tags: latest, ${{ github.sha }}" >> deployment-artifacts/deployment-info.txt
+echo "Deployment Date: $(date)" >> deployment-artifacts/deployment-info.txt
+echo "Commit SHA: ${{ github.sha }}" >> deployment-artifacts/deployment-info.txt
+cp -r terraform/ deployment-artifacts/
+zip -r deployment-artifacts-${{ github.sha }}.zip deployment-artifacts/
+
+- name: Upload deployment artifacts
+uses: actions/upload-artifact@v4
+with:
+name: deployment-artifacts-${{ github.sha }}
+path: deployment-artifacts-${{ github.sha }}.zip
+retention-days: 30
